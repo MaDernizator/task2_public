@@ -29,8 +29,8 @@ class CargoHunter:
 
         # Параметры полета
         self.SCAN_HEIGHT = 6.0
-        self.APPROACH_HEIGHT = 2.0  # Высота для стабилизации перед посадкой
-        self.TRANSPORT_HEIGHT = 1.5
+        self.APPROACH_HEIGHT = 3.0  # Высота для стабилизации перед посадкой
+        self.TRANSPORT_HEIGHT = 2.0
         self.RECON_RADIUS = 5.0
 
         # Корзина
@@ -152,7 +152,7 @@ class CargoHunter:
         """Полет к точке"""
         self.drone.go_to_local_point(x=x, y=y, z=z, yaw=0)
         while not self.drone.point_reached():
-            time.sleep(0.1)
+            time.sleep(0.01)
         return True
 
     def detect_rings_advanced(self, frame: np.ndarray, debug: bool = False) -> List[Tuple[int, int, float]]:
@@ -212,7 +212,8 @@ class CargoHunter:
             if circularity < 0.25:
                 continue
 
-
+            
+            
             # Центр масс
             M = cv2.moments(cnt)
             if M["m00"] == 0:
@@ -293,7 +294,8 @@ class CargoHunter:
         self.log("СКАНИРОВАНИЕ УГЛОВ")
         self.log("="*60)
 
-        corners = [corner]
+        corners = [ corner
+        ]
 
         for i, (tx, ty, name) in enumerate(corners, 1):
             self.log(f"\nУгол {i}/4: {name} ({tx:.1f}, {ty:.1f})")
@@ -304,13 +306,13 @@ class CargoHunter:
 
             # Стабилизация
             self.log("  Стабилизация...")
-            time.sleep(0.1)
+            time.sleep(0.2)
 
             # Несколько снимков
             for scan_num in range(5):
                 frame = self.get_frame()
                 if frame is None:
-                    time.sleep(0.1)
+                    time.sleep(0.2)
                     continue
 
                 rings = self.detect_rings_advanced(frame, debug=(scan_num == 0))
@@ -327,8 +329,8 @@ class CargoHunter:
                             self.cargo_map.append(cargo)
                             dist = cargo.distance_from(self.basket_x, self.basket_y)
                             self.log(f"    ✓ Груз #{len(self.cargo_map)}: ({world_x:.2f}, {world_y:.2f}), dist={dist:.2f}м")
-                    break
                 
+                time.sleep(0.3)
 
         self.log(f"\n✓ Найдено {len(self.cargo_map)} грузов")
 
@@ -418,7 +420,8 @@ class CargoHunter:
             # Выполняем коррекцию позиции (БЕЗ изменения высоты!)
             self.log(f"  [{attempt}] Корректирую позицию: переход к ({new_x:.2f}, {new_y:.2f}) на высоте {pos[2]:.2f}м")
             
-            self.quick_goto(new_x, new_y, pos[2], timeout=5.0)
+            self.quick_goto(new_x, new_y, pos[2])
+            time.sleep(0.05)
 
         self.log("!!! Стабилизация не достигнута (превышено max_attempts)")
         return False
@@ -429,35 +432,29 @@ class CargoHunter:
         self.log(f"ЗАХВАТ ГРУЗА: ({cargo.world_x:.2f}, {cargo.world_y:.2f})")
         self.log('='*60)
 
-        ps = self.get_position()
-        self.log(f"Подлёт к грузу на высоте {4:.1f} м...")
-        if not self.quick_goto(ps[0], ps[1], 4, timeout=15.0):
-            self.log("!!! Не удалось подлететь к грузу")
-            return False
-
-
         # --- 1. Подлёт к грузу на высоте сканирования ---
         self.log(f"Подлёт к грузу на высоте {self.APPROACH_HEIGHT:.1f} м...")
         if not self.quick_goto(cargo.world_x, cargo.world_y, self.APPROACH_HEIGHT, timeout=15.0):
             self.log("!!! Не удалось подлететь к грузу")
             return False
 
-        # --- 2. ЦЕНТРИРОВАНИЕ на высоте сканирования ---
-        self.log("ЭТАП 1: Центрирование на высоте сканирования...")
-        if not self.stabilize_over_cargo(cargo.world_x, cargo.world_y, 4, max_attempts=10, pixel_tolerance=8):
-            self.log("⚠️ Не удалось центрироваться, но продолжаем...")
         
-        time.sleep(0.5)
+        # --- 4. Повторное центрирование на меньшей высоте ---
+        pos = self.get_position()
+        self.log("ЭТАП 3: Точное центрирование на малой высоте...")
+        if not self.stabilize_over_cargo(pos[0], pos[1], self.APPROACH_HEIGHT, max_attempts=10, pixel_tolerance=10):
+            return False
+
         self.log("ЭТАП 6: Активация магнита для захвата груза...")
         self.drone.cargo_grab()
         # --- 5. Первая посадка ---
         self.log("ЭТАП 4: Первая посадка на груз...")
         self.drone.land()
 
+
         # --- 9. Взлёт с грузом ---
         self.log("ЭТАП 8: Взлёт с грузом...")
         self.drone.takeoff()
-        time.sleep(0.3)
         cur_pos = self.get_position()
         if not self.quick_goto(cur_pos[0], cur_pos[1], self.TRANSPORT_HEIGHT, timeout=6.0):
             self.log("⚠️ Не удалось выйти на транспортную высоту")
@@ -465,15 +462,7 @@ class CargoHunter:
         # --- 10. Полёт к корзине ---
         self.log("ЭТАП 9: Перелёт к корзине для выгрузки...")
         self.quick_goto(self.basket_x, self.basket_y, self.TRANSPORT_HEIGHT, timeout=10.0)
-        time.sleep(0.1)
 
-        for i in range(2):
-            self.drone.land()
-            time.sleep(0.5)
-            self.drone.takeoff()
-            time.sleep(0.1)
-            self.quick_goto(self.basket_x, self.basket_y, self.TRANSPORT_HEIGHT, timeout=10.0)
-            time.sleep(0.1)
         # --- 11. Выгрузка ---
         self.log("ЭТАП 10: Отпускание груза...")
         self.drone.cargo_release()
@@ -519,11 +508,10 @@ class CargoHunter:
         viz_thread.start()
 
         try:
-            self.log("Взлёт...")
+            self.log("Взлёт... ")
             self.drone.arm()
-            time.sleep(0.5)
-            self.drone.takeoff()
             time.sleep(1.0)
+            self.drone.takeoff()
 
             pos = self.get_position()
             self.basket_x = pos[0]
@@ -540,15 +528,16 @@ class CargoHunter:
             self.quick_goto(self.basket_x, self.basket_y, self.SCAN_HEIGHT, timeout=6.0)
             time.sleep(1.0)
 
-            # Сканирование
+            
             corners = [
                 (self.basket_x, self.basket_y, "CUR"),
                 (self.basket_x - self.RECON_RADIUS, self.basket_y - self.RECON_RADIUS, "ЮЗ"),
                 (self.basket_x + self.RECON_RADIUS, self.basket_y - self.RECON_RADIUS, "ЮВ"),
                 (self.basket_x + self.RECON_RADIUS, self.basket_y + self.RECON_RADIUS, "СВ"),
                 (self.basket_x - self.RECON_RADIUS, self.basket_y + self.RECON_RADIUS, "СЗ"),
-            ]   
-            for i in corners: 
+            ]
+            for i in corners:
+                # Сканирование
                 self.scan_corners(i)
 
                 # Захват
